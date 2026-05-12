@@ -61,7 +61,6 @@ def _use_master_header_normalize() -> bool:
     return (
         getattr(pipe, "master_header_normalize", True)
         and io_cfg is not None
-        and getattr(io_cfg, "enabled", False)
     )
 
 
@@ -499,11 +498,7 @@ def process_transcript_for_monitor(
         )
 
         io_cfg = getattr(settings.config, "incidents_ollama", None)
-        llm_on = bool(
-            getattr(cfg, "llm_routing", False)
-            and io_cfg is not None
-            and getattr(io_cfg, "enabled", False)
-        )
+        llm_on = io_cfg is not None
 
         # Persist every span to span_store so get_recent_spans reflects full monitor activity,
         # including VAD_REJECTED / NER-empty spans (NER columns blank).
@@ -540,7 +535,7 @@ def process_transcript_for_monitor(
             if not llm_on:
                 debug_append_ner(
                     monitor_id, log_entry_id, "master_needs_ollama", "", duration_ms, entities,
-                    "set incidents_ollama.enabled and events_pipeline.llm_routing",
+                    "configure incidents_ollama and enable events_pipeline.enabled",
                     raw_output, transcript,
                 )
                 return
@@ -726,7 +721,7 @@ def process_transcript_for_monitor(
         if not llm_on:
             debug_append_ner(
                 monitor_id, log_entry_id, "worker_needs_ollama", "", duration_ms, entities,
-                "set incidents_ollama.enabled and events_pipeline.llm_routing",
+                "configure incidents_ollama and enable events_pipeline.enabled",
                 raw_output, transcript,
             )
             return

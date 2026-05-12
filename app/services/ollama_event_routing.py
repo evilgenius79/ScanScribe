@@ -1,7 +1,12 @@
 """
-LLM-based event routing via Ollama + tools (read-only DB lookups).
-Default: OpenAI-compatible POST {base}/v1/chat/completions (better tool calling on many models).
-Optional: native POST {base}/api/chat (events_pipeline.llm_routing_openai_api: false).
+LLM-based event routing with tools (read-only DB lookups).
+
+Backends: Ollama (local) or DeepSeek (cloud, OpenAI-compatible). Selected via
+incidents_ollama.provider.
+
+Default wire: OpenAI-compatible POST {base}/v1/chat/completions (better tool calling on many models).
+Optional: native POST {base}/api/chat (events_pipeline.llm_routing_openai_api: false). DeepSeek
+does not implement native /api/chat — the OpenAI path is forced for that provider.
 """
 from __future__ import annotations
 
@@ -12,13 +17,19 @@ import socket
 import urllib.error
 import urllib.request
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..config import get_settings, incidents_ollama_master_model
+from ..config import (
+    get_settings,
+    incidents_ollama_api_key,
+    incidents_ollama_base_url,
+    incidents_ollama_master_model,
+)
 from ..database import LogsSessionLocal
 from ..models.event import Event, EventTranscriptLink, SpanStore
 from ..models.log_entry import LogEntry
@@ -27,6 +38,55 @@ logger = logging.getLogger(__name__)
 
 _RAW_LOG_MAX = 12000
 _ROUTING_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high"})
+
+
+@dataclass(frozen=True)
+class LLMProviderCtx:
+    """Resolved provider context for one LLM call site.
+
+    provider: "ollama" | "deepseek"
+    base_url: effective endpoint root (no trailing slash)
+    api_key: bearer token (DeepSeek only); empty for Ollama
+    supports_reasoning_effort: DeepSeek does NOT (omit when False)
+    supports_native_chat: DeepSeek does NOT have /api/chat (force OpenAI path when False)
+    """
+    provider: str
+    base_url: str
+    api_key: str
+    supports_reasoning_effort: bool
+    supports_native_chat: bool
+
+
+def _resolve_provider_ctx(ollama_cfg: Any) -> LLMProviderCtx:
+    provider = (getattr(ollama_cfg, "provider", "ollama") or "ollama").strip().lower()
+    if provider == "deepseek":
+        return LLMProviderCtx(
+            provider="deepseek",
+            base_url=incidents_ollama_base_url(ollama_cfg),
+            api_key=incidents_ollama_api_key(ollama_cfg),
+            supports_reasoning_effort=False,
+            supports_native_chat=False,
+        )
+    return LLMProviderCtx(
+        provider="ollama",
+        base_url=incidents_ollama_base_url(ollama_cfg),
+        api_key="",
+        supports_reasoning_effort=True,
+        supports_native_chat=True,
+    )
+
+
+def _provider_supports_tools_for_model(ctx: LLMProviderCtx, model: str) -> Tuple[bool, str]:
+    """DeepSeek-only guard: deepseek-reasoner does not support function/tool calling."""
+    if ctx.provider != "deepseek":
+        return True, ""
+    name = (model or "").strip().lower()
+    if "reasoner" in name:
+        return False, (
+            f"deepseek-reasoner ({model!r}) does not support tool calling; "
+            "use deepseek-chat for worker_model/master_model"
+        )
+    return True, ""
 
 
 # --- Config resolution helpers (shared with ollama_worker) ---
@@ -439,36 +499,63 @@ def _parse_tool_arguments(raw: Any) -> Dict[str, Any]:
     return {}
 
 
-def _http_post_json(url: str, body: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
+def _http_post_json(
+    url: str,
+    body: Dict[str, Any],
+    timeout: float,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+) -> Optional[Dict[str, Any]]:
     try:
+        merged_headers = {"Content-Type": "application/json"}
+        if headers:
+            merged_headers.update(headers)
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=merged_headers,
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            payload = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            payload = ""
+        logger.warning("LLM HTTP %s on %s: %s", e.code, url, payload[:500] if payload else e)
+        return None
     except urllib.error.URLError as e:
         err = str(e).lower()
         if "timed out" in err or "timeout" in err:
             logger.warning(
-                "Ollama request timed out (%.0fs); raise incidents_ollama.timeout_seconds if needed",
+                "LLM request timed out (%.0fs); raise incidents_ollama.timeout_seconds if needed",
                 timeout,
             )
         else:
-            logger.debug("Ollama unavailable: %s", e)
+            logger.debug("LLM endpoint unavailable: %s", e)
         return None
     except socket.timeout:
-        logger.warning("Ollama socket timeout (%.0fs)", timeout)
+        logger.warning("LLM socket timeout (%.0fs)", timeout)
         return None
     except Exception as e:
-        logger.warning("Ollama request failed: %s", e)
+        logger.warning("LLM request failed: %s", e)
         return None
 
 
 def _conversation_has_tool_results(messages: List[Dict[str, Any]]) -> bool:
     return any(m.get("role") == "tool" for m in messages)
+
+
+def _provider_headers(ctx: Optional[LLMProviderCtx]) -> Optional[Dict[str, str]]:
+    if ctx is None or ctx.provider != "deepseek":
+        return None
+    if not ctx.api_key:
+        logger.warning(
+            "DeepSeek selected but api_key is empty (set incidents_ollama.api_key or DEEPSEEK_API_KEY)"
+        )
+        return None
+    return {"Authorization": f"Bearer {ctx.api_key}"}
 
 
 def _ollama_openai_completions_request(
@@ -483,6 +570,7 @@ def _ollama_openai_completions_request(
     tool_choice: Optional[str] = None,
     response_format: Optional[Dict[str, Any]] = None,
     omit_response_format: bool = False,
+    provider_ctx: Optional[LLMProviderCtx] = None,
 ) -> Optional[Dict[str, Any]]:
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     body: Dict[str, Any] = {
@@ -498,27 +586,30 @@ def _ollama_openai_completions_request(
             body["response_format"] = fmt
     if max_tokens is not None and max_tokens > 0:
         body["max_tokens"] = max_tokens
-    if reasoning_effort:
+    if reasoning_effort and (provider_ctx is None or provider_ctx.supports_reasoning_effort):
         body["reasoning_effort"] = reasoning_effort
     if tools:
         body["tools"] = tools
         body["tool_choice"] = tool_choice if tool_choice is not None else "auto"
-    data = _http_post_json(url, body, timeout)
+    headers = _provider_headers(provider_ctx)
+    if provider_ctx is not None and provider_ctx.provider == "deepseek" and headers is None:
+        return None
+    data = _http_post_json(url, body, timeout, headers=headers)
     if not data:
         return None
     err = data.get("error")
     if err:
-        logger.warning("Ollama /v1 error: %s", err)
+        logger.warning("LLM /v1 error: %s", err)
         if tools and body.get("tool_choice") == "required":
             body_retry = dict(body)
             body_retry["tool_choice"] = "auto"
-            logger.info("Retrying Ollama /v1/chat/completions with tool_choice=auto")
-            data = _http_post_json(url, body_retry, timeout)
+            logger.info("Retrying /v1/chat/completions with tool_choice=auto")
+            data = _http_post_json(url, body_retry, timeout, headers=headers)
             if not data:
                 return None
             err = data.get("error")
             if err:
-                logger.warning("Ollama /v1 error after retry: %s", err)
+                logger.warning("LLM /v1 error after retry: %s", err)
                 return None
         else:
             return None
@@ -534,7 +625,14 @@ def _ollama_native_chat_request(
     *,
     max_tokens: Optional[int] = None,
     format_json: bool = False,
+    provider_ctx: Optional[LLMProviderCtx] = None,
 ) -> Optional[Dict[str, Any]]:
+    if provider_ctx is not None and not provider_ctx.supports_native_chat:
+        logger.warning(
+            "Native /api/chat not supported by provider=%s; caller must use OpenAI-compatible path",
+            provider_ctx.provider,
+        )
+        return None
     url = f"{base_url.rstrip('/')}/api/chat"
     opts: Dict[str, Any] = {"temperature": 0.1}
     if max_tokens is not None and max_tokens > 0:
@@ -561,6 +659,7 @@ def _call_master_chat_plain(
     max_tokens: Optional[int],
     use_openai_api: bool,
     reasoning_effort: Optional[str] = None,
+    provider_ctx: Optional[LLMProviderCtx] = None,
 ) -> Optional[Dict[str, Any]]:
     """Master model chat without tools: plain text (no json_object response_format)."""
     if use_openai_api:
@@ -573,9 +672,11 @@ def _call_master_chat_plain(
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
             omit_response_format=True,
+            provider_ctx=provider_ctx,
         )
     return _ollama_native_chat_request(
         base_url, model, messages, None, timeout, max_tokens=max_tokens,
+        provider_ctx=provider_ctx,
     )
 
 
@@ -589,9 +690,13 @@ def _routing_response_message(data: Dict[str, Any], use_openai_api: bool) -> Dic
 
 
 def _message_text_for_decision(msg: Dict[str, Any]) -> str:
-    """Merge text fields: OpenAI-compat Qwen often leaves `content` empty and uses `reasoning`."""
+    """Merge text fields: OpenAI-compat Qwen often leaves `content` empty and uses `reasoning`.
+
+    DeepSeek-reasoner returns chain-of-thought in `reasoning_content`; we keep it as a fallback
+    so JSON scanners can still recover a decision if `content` is empty, but `content` wins.
+    """
     chunks: List[str] = []
-    for key in ("content", "thinking", "reasoning"):
+    for key in ("content", "thinking", "reasoning", "reasoning_content"):
         s = (msg.get(key) or "").strip()
         if s:
             chunks.append(s)
@@ -860,16 +965,25 @@ def route_transcript_with_llm(
     settings = get_settings()
     ollama_cfg = getattr(settings.config, "incidents_ollama", None)
     pipe = settings.config.events_pipeline
-    if not ollama_cfg or not getattr(ollama_cfg, "enabled", False):
-        return None
-    if not getattr(pipe, "llm_routing", False):
+    if not ollama_cfg or not getattr(pipe, "enabled", False):
         return None
 
-    base_url = (ollama_cfg.base_url or "http://localhost:11434").rstrip("/")
+    provider_ctx = _resolve_provider_ctx(ollama_cfg)
+    base_url = provider_ctx.base_url
     model = incidents_ollama_master_model(ollama_cfg)
+    ok, why = _provider_supports_tools_for_model(provider_ctx, model)
+    if not ok:
+        logger.warning("Master router: %s", why)
+        return None
     timeout = _resolve_timeout(ollama_cfg)
     max_rounds = int(getattr(pipe, "llm_routing_max_tool_rounds", 12) or 12)
     use_openai_api = bool(getattr(pipe, "llm_routing_openai_api", True))
+    if not provider_ctx.supports_native_chat and not use_openai_api:
+        logger.info(
+            "Master router: provider=%s does not support native /api/chat; forcing OpenAI-compatible path",
+            provider_ctx.provider,
+        )
+        use_openai_api = True
     routing_max_tokens = _resolve_max_tokens(pipe)
     routing_reasoning_effort = _resolve_reasoning_effort(pipe)
     log_raw = bool(getattr(pipe, "llm_routing_log_raw", False))
@@ -1000,6 +1114,7 @@ def route_transcript_with_llm(
                 max_tokens=routing_max_tokens,
                 reasoning_effort=routing_reasoning_effort,
                 tool_choice="auto" if _conversation_has_tool_results(messages) else "required",
+                provider_ctx=provider_ctx,
             )
         else:
             if routing_reasoning_effort:
@@ -1008,6 +1123,7 @@ def route_transcript_with_llm(
                 )
             data = _ollama_native_chat_request(
                 base_url, model, messages, ROUTING_TOOLS, timeout, max_tokens=routing_max_tokens,
+                provider_ctx=provider_ctx,
             )
         if not data:
             return None
