@@ -209,6 +209,10 @@ def _worker_tool_loop_path(
         "if transcript is VAD_REJECTED (or equivalent system/VAD marker): always skip.\n"
         "skip if: duplicate dispatch, continuation of open incident, "
         "test traffic, or ambiguous.\n"
+        "NER label semantics in the user payload: ADDRESS = numbered house/structured addresses; "
+        "LOC = streets, intersections, and named places (Walmart, Dollar General); "
+        "UNIT = radio unit; EVT_TYPE = incident type; STATUS = operational status; "
+        "TIME = 24h time-of-day. Use these as hints only.\n"
         "Do not narrate. Do not explain. Do not repeat monitor/transcript fields. "
         "Output only that JSON after tools."
     )

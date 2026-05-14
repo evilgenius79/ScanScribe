@@ -390,10 +390,7 @@ def _tool_get_recent_spans(
             "units": r.units,
             "locations": r.locations,
             "addresses": r.addresses,
-            "cross_streets": r.cross_streets,
-            "persons": r.persons,
-            "vehicles": r.vehicles,
-            "plates": r.plates,
+            "status": getattr(r, "status", None),
             "time_mentions": getattr(r, "time_mentions", None),
             "transcript_preview": (preview[:500] + "…") if len(preview) > 500 else preview,
             "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -1042,8 +1039,12 @@ def route_transcript_with_llm(
         "- The field \"ner_clues\" is machine NER output: wrong labels, noise, and missed phrases are common. "
         "Use it only as a hint when it agrees with the transcript; never let NER override plain English in "
         "the transcript.\n"
-        "- Do NOT attach because ner_clues shows EVT_TYPE, LOC, or UNIT if the transcript itself does not "
-        "support tying this transmission to that open event.\n"
+        "- NER label semantics: ADDRESS = numbered house/structured addresses (\"1521 Maple Ave\"). "
+        "LOC = streets, intersections, and named places (Walmart, Dollar General, Main & 5th). "
+        "UNIT = radio unit. EVT_TYPE = incident type. STATUS = operational status. "
+        "TIME = 24h time-of-day mentions; the field \"dispatcher_stated_times\" lists any parseable values.\n"
+        "- Do NOT attach because ner_clues shows EVT_TYPE, LOC, ADDRESS, or UNIT if the transcript itself "
+        "does not support tying this transmission to that open event.\n"
         "- Your \"reason\" must reflect the transcript's meaning (paraphrase or short quote of what was "
         "said), not a restatement of NER tags or event headers.\n\n"
 
@@ -1084,6 +1085,22 @@ def route_transcript_with_llm(
 
     system = system_builtin
 
+    # Dispatcher-stated 24h time (NER TIME entity) — used as additional staleness grounding
+    # so the model can tell e.g. that "at 14:32" refers to an earlier dispatch.
+    from .entity_time import parse_24h_time  # local import to avoid circular at module load
+    dispatcher_times: List[str] = []
+    if entities.get("TIME"):
+        log_date = None
+        if log_timestamp is not None and hasattr(log_timestamp, "date"):
+            try:
+                log_date = log_timestamp.date()
+            except Exception:
+                log_date = None
+        for raw_t in entities.get("TIME", []):
+            parsed = parse_24h_time(raw_t, log_date)
+            if parsed is not None:
+                dispatcher_times.append(parsed.isoformat())
+
     # transcript first so the model sees ground truth before NER hints (JSON key order preserved).
     user_payload = {
         "transcript": transcript,
@@ -1094,6 +1111,7 @@ def route_transcript_with_llm(
         "log_entry_id": log_entry_id,
         "incident_time": ts_str,
         "system_time": system_time_str,
+        "dispatcher_stated_times": dispatcher_times,
         "timestamp": ts_str,
         "primary_event_id": primary_event_id,
         "worker_deferred": worker_deferred,

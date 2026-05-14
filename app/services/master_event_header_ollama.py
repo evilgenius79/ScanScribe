@@ -73,8 +73,11 @@ def _run_master_header_normalize(event_db_id: int, cfg: Any, pipe: Any) -> None:
         "the first non-whitespace character must be '{'.\n"
         "Output ONLY a single JSON object (no markdown, no commentary) with exactly these string keys:\n"
         '  "event_type" — 2–6 words, Title Case incident noun phrase (e.g. Structure Fire, Traffic Stop).\n'
-        '  "location" — primary street address or named place; deduplicate; empty string if unknown.\n'
-        '  "units" — comma-separated units/agencies as heard (e.g. Engine 4, 12U-1771); empty string if unknown.\n'
+        '  "location" — primary location for this incident. Prefer the numbered house ADDRESS '
+        '(e.g. "1521 Maple Avenue") when present in the transcripts; otherwise use the LOC '
+        'value (street, intersection, or named place like Walmart, Dollar General). '
+        'Deduplicate; empty string if unknown.\n'
+        '  "units" — comma-separated units as heard (e.g. Engine 4, 12U-1771); empty string if unknown.\n'
         '  "status_detail" — short operational status (e.g. En Route, On Scene, Clear); empty string if unknown.\n'
         "Use transcript lines as the source of truth. A separate NER hints block may be noisy — use it only to "
         "disambiguate when it agrees with audio. Do not invent facts.\n"
