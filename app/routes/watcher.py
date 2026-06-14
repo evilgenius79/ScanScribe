@@ -1,4 +1,5 @@
 """Watcher control routes."""
+import logging
 import psutil
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -9,6 +10,7 @@ from ..services.queue_processor import get_processor
 from ..services.websocket import websocket_manager
 
 router = APIRouter(prefix="/api/watcher", tags=["watcher"])
+logger = logging.getLogger(__name__)
 
 # Get service instances
 watcher_service = get_watcher_service()
@@ -126,4 +128,9 @@ async def websocket_endpoint(websocket: WebSocket):
             # Echo back (or handle commands if needed)
             # For now, just keep connection alive
     except WebSocketDisconnect:
+        websocket_manager.disconnect(websocket)
+    except Exception as e:
+        # Any other error (reset, protocol error) must also deregister the socket
+        # so it isn't left in active_connections leaking memory / failing sends.
+        logger.warning(f"WebSocket closed unexpectedly: {e}")
         websocket_manager.disconnect(websocket)

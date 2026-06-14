@@ -307,11 +307,23 @@ class TranscriptionEngine:
         )[0].strip()
         
         # Confidence
-        if hasattr(generated_ids, 'sequences_scores'):
-            confidence = float(torch.exp(generated_ids.sequences_scores[0]))
+        seq_scores = getattr(generated_ids, 'sequences_scores', None)
+        if seq_scores is not None:
+            # Beam search: normalized sequence log-prob -> probability.
+            confidence = float(torch.exp(seq_scores[0]))
         else:
-            confidence = 0.85
-        
+            # Greedy decoding (num_beams=1) produces no sequences_scores. Derive a
+            # genuine confidence from the per-token logits instead of fabricating one.
+            step_scores = getattr(generated_ids, 'scores', None)
+            if step_scores:
+                token_probs = [
+                    float(torch.softmax(step[0], dim=-1).max())
+                    for step in step_scores
+                ]
+                confidence = sum(token_probs) / len(token_probs) if token_probs else 0.0
+            else:
+                confidence = 0.0
+
         return transcript, confidence
     
     def _get_silence_removed_audio(self, audio: np.ndarray, sr: int) -> np.ndarray:

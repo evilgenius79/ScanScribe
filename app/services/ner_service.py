@@ -1,6 +1,7 @@
 """NER service: loads fine-tuned token classification model, extracts entities from transcripts."""
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -25,6 +26,9 @@ ENTITY_LABELS = frozenset(
 )
 
 _pipeline = None
+# HuggingFace pipelines are not safe for concurrent inference. Serialize calls so
+# future parallel callers (extra queue workers, manual reprocess) can't corrupt state.
+_pipeline_lock = threading.Lock()
 
 
 def is_loaded() -> bool:
@@ -89,7 +93,8 @@ def extract_entities(transcript: str, threshold: float = 0.0) -> tuple[Dict[str,
         return {}, []
 
     try:
-        results = _pipeline(transcript.strip()) or []
+        with _pipeline_lock:
+            results = _pipeline(transcript.strip()) or []
     except Exception as e:
         logger.warning("NER inference failed: %s", e)
         return {}, []

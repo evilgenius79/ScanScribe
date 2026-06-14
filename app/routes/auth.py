@@ -1,4 +1,5 @@
 """Authentication routes."""
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,7 +7,12 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+# bcrypt rejects/truncates inputs longer than 72 bytes; cap explicitly so long
+# passphrases fail loudly instead of being silently truncated.
+_MAX_PASSWORD_BYTES = 72
 
 from ..database import get_db
 from ..models.user import User
@@ -55,7 +61,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def get_password_hash(password: str) -> str:
-    """Hash a password."""
+    """Hash a password.
+
+    bcrypt only considers the first 72 bytes; reject longer inputs so a long
+    passphrase isn't silently truncated (which would weaken the stored hash).
+    """
+    if len(password.encode("utf-8")) > _MAX_PASSWORD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Password must be at most {_MAX_PASSWORD_BYTES} bytes",
+        )
     return pwd_context.hash(password)
 
 
@@ -134,6 +149,16 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
         )
     
     is_first_user = db.query(User).count() == 0
+
+    # Once the instance is bootstrapped, open self-registration can be disabled
+    # so an attacker can't create accounts. The first (admin) account is always
+    # allowed so a fresh deployment can be set up.
+    if not is_first_user and os.getenv("DISABLE_OPEN_REGISTRATION", "").lower() in ("1", "true", "yes"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Open registration is disabled. Contact an administrator.",
+        )
+
     hashed_password = get_password_hash(user_data.password)
     db_user = User(
         username=user_data.username,
@@ -143,7 +168,25 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
         is_admin=is_first_user,
     )
     db.add(db_user)
-    db.commit()
+    try:
+        db.flush()
+        # Guard against two concurrent "first" registrations both claiming admin:
+        # only keep admin if no other admin landed first.
+        if is_first_user:
+            other_admin = (
+                db.query(User)
+                .filter(User.is_admin == True, User.id != db_user.id)  # noqa: E712
+                .first()
+            )
+            if other_admin is not None:
+                db_user.is_admin = False
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username or email already registered",
+        )
     db.refresh(db_user)
     return db_user
 

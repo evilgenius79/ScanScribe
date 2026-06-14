@@ -9,6 +9,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Secret keys that must never be used in a real deployment. Startup validation
+# (see app/main.py) refuses to boot when the active SECRET_KEY matches one of
+# these or is too short to be safe.
+INSECURE_SECRET_KEYS = frozenset(
+    {
+        "",
+        "dev-secret-key-change-in-production",
+        "changeme-generate-secret-key",
+        "your-super-secret-key-change-this-in-production",
+        "change-me",
+        "changeme",
+        "secret",
+    }
+)
+
+
+def secret_key_is_insecure(key: Optional[str]) -> bool:
+    """True if the JWT signing key is a known default, empty, or too short."""
+    k = (key or "").strip()
+    return k in INSECURE_SECRET_KEYS or len(k) < 16
+
 
 class ModelConfig(BaseModel):
     """Model configuration."""
@@ -263,8 +284,13 @@ class Settings:
         # Security settings from environment variables (not in config.yml)
         # Bootstrap admin (empty DB only): SCANSCRIBE_DEFAULT_ADMIN_PASSWORD,
         # SCANSCRIBE_DEFAULT_ADMIN_USERNAME (default admin), SCANSCRIBE_DEFAULT_ADMIN_EMAIL (default admin@localhost)
-        self.secret_key = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
-        self.access_token_expire_minutes = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+        self.secret_key = os.getenv("SECRET_KEY", "")
+        self.secret_key_is_insecure = secret_key_is_insecure(self.secret_key)
+        try:
+            self.access_token_expire_minutes = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+        except (TypeError, ValueError):
+            logger.warning("Invalid ACCESS_TOKEN_EXPIRE_MINUTES; falling back to 60")
+            self.access_token_expire_minutes = 60
         self.algorithm = "HS256"
         
         # Directory paths from environment variables

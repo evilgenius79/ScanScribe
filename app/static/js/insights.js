@@ -321,8 +321,8 @@ function updateTalkgroups(talkgroups, allTalkgroups) {
     const maxCount = Math.max(...talkgroups.map(t => t.count));
     
     container.innerHTML = talkgroups.slice(0, 10).map(tg => `
-        <div class="flex items-center gap-4 cursor-pointer talkgroup-row" data-talkgroup="${tg.talkgroup}">
-            <div class="w-32 text-sm truncate" title="${tg.talkgroup}">${tg.talkgroup}</div>
+        <div class="flex items-center gap-4 cursor-pointer talkgroup-row" data-talkgroup="${escapeHtml(tg.talkgroup)}">
+            <div class="w-32 text-sm truncate" title="${escapeHtml(tg.talkgroup)}">${escapeHtml(tg.talkgroup)}</div>
             <div class="flex-1">
                 <div class="talkgroup-bar" style="width: ${(tg.count / maxCount * 100)}%"></div>
             </div>
@@ -352,8 +352,8 @@ function updateRecentActivity(recent) {
     container.innerHTML = recent.map(entry => `
         <div class="flex items-center gap-3 p-2 rounded" style="background: rgba(255,255,255,0.02);">
             <div class="text-xs text-gray-500 w-20">${formatTime(entry.timestamp)}</div>
-            <div class="text-xs px-2 py-1 rounded" style="background: rgba(59, 130, 246, 0.2);">${entry.talkgroup || 'N/A'}</div>
-            <div class="flex-1 text-sm truncate">${truncate(entry.transcript, 80)}</div>
+            <div class="text-xs px-2 py-1 rounded" style="background: rgba(59, 130, 246, 0.2);">${escapeHtml(entry.talkgroup || 'N/A')}</div>
+            <div class="flex-1 text-sm truncate">${escapeHtml(truncate(entry.transcript, 80))}</div>
             <div class="text-xs text-gray-500">${entry.duration?.toFixed(1) || 0}s</div>
         </div>
     `).join('');
@@ -505,7 +505,7 @@ function updateSearchResults(results, total) {
                 <div class="text-xs text-gray-600">${formatDateShort(entry.timestamp)}</div>
             </div>
             <div class="text-xs px-2 py-1 rounded min-w-[80px] text-center talkgroup-filter-chip" style="background: rgba(59, 130, 246, 0.2); cursor: pointer;" data-talkgroup="${escapeHtml(entry.talkgroup || 'N/A')}" title="Click to add as filter">
-                ${entry.talkgroup || 'N/A'}
+                ${escapeHtml(entry.talkgroup || 'N/A')}
             </div>
             <div class="flex-1 text-sm search-result-transcript">${highlightKeyword(entry.transcript || '', searchFilters.keyword)}</div>
             <div class="flex flex-col gap-1 text-right min-w-[72px] items-end">
@@ -648,11 +648,13 @@ function stopAudio() {
     }
 }
 
-// Highlight search keyword in text
+// Highlight search keyword in text. The text is HTML-escaped first so that
+// transcript/talkgroup content (attacker-influenceable) can never inject markup.
 function highlightKeyword(text, keyword) {
-    if (!keyword || !text) return text;
-    const regex = new RegExp(`(${escapeRegex(keyword)})`, 'gi');
-    return text.replace(regex, '<span style="background: rgba(234, 179, 8, 0.3); padding: 0 2px; border-radius: 2px;">$1</span>');
+    const safe = escapeHtml(text || '');
+    if (!keyword) return safe;
+    const regex = new RegExp(`(${escapeRegex(escapeHtml(keyword))})`, 'gi');
+    return safe.replace(regex, '<span style="background: rgba(234, 179, 8, 0.3); padding: 0 2px; border-radius: 2px;">$1</span>');
 }
 
 function escapeRegex(str) {
@@ -934,9 +936,14 @@ async function loadSummaries() {
         }
 
         const renderMarkdown = (raw) => {
-            if (typeof marked === 'undefined' || !marked.parse) return escapeHtml(raw).replace(/\n/g, '<br>');
+            const fallback = escapeHtml(raw).replace(/\n/g, '<br>');
+            if (typeof marked === 'undefined' || !marked.parse) return fallback;
             const out = marked.parse(raw);
-            return (typeof out === 'string') ? out : escapeHtml(raw).replace(/\n/g, '<br>');
+            const html = (typeof out === 'string') ? out : fallback;
+            // Summaries are LLM-generated from radio transcripts; sanitize the
+            // rendered HTML so embedded markup can't execute. If the sanitizer
+            // failed to load, fall back to fully-escaped text.
+            return (typeof DOMPurify !== 'undefined') ? DOMPurify.sanitize(html) : fallback;
         };
         listEl.innerHTML = summaries.map(s => {
             const html = renderMarkdown(s.text || '');

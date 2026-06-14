@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 from .config import get_settings
@@ -26,7 +27,7 @@ SQLALCHEMY_DATABASE_URL = f"sqlite:///{settings.db_path}"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},  # SQLite specific
+    connect_args={"check_same_thread": False, "timeout": 30},  # SQLite specific
     echo=False,  # Set to True for SQL debugging
 )
 
@@ -36,7 +37,7 @@ LOGS_DATABASE_URL = f"sqlite:///{LOGS_DB_PATH}"
 
 logs_engine = create_engine(
     LOGS_DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 30},
     echo=False,
 )
 
@@ -46,9 +47,29 @@ EVENTS_DATABASE_URL = f"sqlite:///{EVENTS_DB_PATH}"
 
 events_engine = create_engine(
     EVENTS_DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 30},
     echo=False,
 )
+
+@event.listens_for(Engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record):
+    """Enable WAL + a busy timeout on every SQLite connection.
+
+    Multiple background workers (queue, watcher, auto-summary, events cleanup)
+    plus request handlers write to three SQLite DBs concurrently. WAL allows
+    concurrent readers during a write, and busy_timeout makes writers wait for
+    a lock instead of immediately raising "database is locked".
+    """
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+    except Exception:
+        # Non-SQLite backends (or a locked DB at connect time) shouldn't break startup.
+        pass
+
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 LogsSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=logs_engine)

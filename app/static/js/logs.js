@@ -1,3 +1,15 @@
+// HTML-escape untrusted values before injecting into innerHTML. Filenames,
+// talkgroups, transcripts and paths are derived from external recordings and
+// must never be rendered as raw markup.
+function escapeHtml(str) {
+    return String(str ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+}
+
 // Check if user is authenticated
 const token = localStorage.getItem('access_token');
 const username = localStorage.getItem('username');
@@ -288,8 +300,12 @@ async function loadLogs() {
                 const audioSrc = hasAudio ? `/${log.audio_path}` : '';
                 const confidence = log.confidence ? (log.confidence * 100).toFixed(0) + '%' : '-';
                 const fileSize = log.file_size ? formatBytes(log.file_size) : '-';
-                const transcriptPreview = log.transcript ? (log.transcript.length > 50 ? log.transcript.substring(0, 50) + '...' : log.transcript) : '-';
-                const escapedTranscript = (log.transcript || '').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const rawPreview = log.transcript ? (log.transcript.length > 50 ? log.transcript.substring(0, 50) + '...' : log.transcript) : '-';
+                const transcriptPreview = escapeHtml(rawPreview);
+                const escapedTranscript = escapeHtml(log.transcript || '');
+                const safeFilename = escapeHtml(log.filename || '-');
+                const safeTalkgroup = escapeHtml(log.talkgroup || '-');
+                const safeAudioPath = escapeHtml(log.audio_path || '-');
                 
                 return `
                 <tr data-id="${log.id}" class="expandable" onclick="toggleExpand(${log.id}, event)">
@@ -297,8 +313,8 @@ async function loadLogs() {
                     <td style="color: var(--grey-text-muted);"><span class="expand-icon">▶</span>${log.id}</td>
                     <td>${formatDate(log.timestamp)}</td>
                     <td>${formatTime(log.timestamp)}</td>
-                    <td class="filename-cell" title="${log.filename}">${log.filename || '-'}</td>
-                    <td>${log.talkgroup || '-'}</td>
+                    <td class="filename-cell" title="${safeFilename}">${safeFilename}</td>
+                    <td>${safeTalkgroup}</td>
                     <td class="transcript-cell">${transcriptPreview}</td>
                     <td>${log.duration ? log.duration.toFixed(1) + 's' : '-'}</td>
                     <td>${confidence}</td>
@@ -320,11 +336,11 @@ async function loadLogs() {
                                 </div>
                                 <div class="expand-field">
                                     <span class="expand-label">Filename</span>
-                                    <span class="expand-value">${log.filename || '-'}</span>
+                                    <span class="expand-value">${safeFilename}</span>
                                 </div>
                                 <div class="expand-field">
                                     <span class="expand-label">Talkgroup</span>
-                                    <span class="expand-value">${log.talkgroup || '-'}</span>
+                                    <span class="expand-value">${safeTalkgroup}</span>
                                 </div>
                                 <div class="expand-field">
                                     <span class="expand-label">Date & Time</span>
@@ -344,7 +360,7 @@ async function loadLogs() {
                                 </div>
                                 <div class="expand-field">
                                     <span class="expand-label">Audio Path</span>
-                                    <span class="expand-value">${log.audio_path || '-'}</span>
+                                    <span class="expand-value">${safeAudioPath}</span>
                                 </div>
                             </div>
                             <div class="expand-field" style="margin-bottom: 1rem;">

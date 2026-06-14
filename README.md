@@ -374,9 +374,15 @@ scanscribe/
 
 ## Security Notes
 
-- Set a strong `SECRET_KEY` in `.env` before deployment
+- Set a strong `SECRET_KEY` in `.env` before deployment. The app now **refuses to
+  start** with a missing, known-default, or too-short key (generate one with
+  `openssl rand -hex 32`). Override for local dev only with `ALLOW_INSECURE_SECRET_KEY=1`.
+- After creating your first (admin) account, set `DISABLE_OPEN_REGISTRATION=1` to
+  block public self-registration.
 - Use an HTTPS reverse proxy (nginx, Traefik, Caddy) in production
 - Restrict the Ollama host to your LAN
+- Restrict CORS with `CORS_ALLOW_ORIGINS` (comma-separated) if exposing the API
+- Limit upload size with `MAX_UPLOAD_MB` (default 500)
 - The web interface and API have no rate limiting by default
 
 ## License

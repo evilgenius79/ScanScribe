@@ -10,6 +10,7 @@ from ..config import get_settings, incidents_ollama_master_model
 from ..database import EventsSessionLocal, LogsSessionLocal
 from ..models.event import Event, EventTranscriptLink
 from ..models.log_entry import LogEntry
+from .events_common import event_work_lock
 from .ollama_event_routing import (
     _call_master_chat_plain,
     _message_text_for_decision,
@@ -145,9 +146,14 @@ def _run_event_summary(event_db_id: int, cfg: Any, pipe: Any) -> None:
                 ln for ln in raw.strip().split("\n")
                 if ln.strip().upper() not in ("RECOMMEND_CLOSE", "RECOMMEND_OPEN")
             ]
-            ev.summary = "\n".join(summary_lines).strip() or raw
-            ev.close_recommendation = recommend_close
-            events_db.commit()
+            summary_text = "\n".join(summary_lines).strip() or raw
+            # Serialize the write with foreground attach/close and header runs.
+            with event_work_lock(event_db_id):
+                ev2 = events_db.query(Event).filter(Event.id == event_db_id).first()
+                if ev2:
+                    ev2.summary = summary_text
+                    ev2.close_recommendation = recommend_close
+                    events_db.commit()
             logger.info(
                 "Events: Master LLM summary updated for event_id=%s (recommend_close=%s)",
                 ev.event_id, recommend_close,

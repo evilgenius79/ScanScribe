@@ -10,9 +10,16 @@ from typing import Optional
 from ..database import get_db, get_logs_db
 from ..models.user import User
 from .auth import get_current_active_user
-from ..config import get_settings, save_config, reload_settings
+from ..config import get_settings, save_config, reload_settings, Config
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+def require_admin(current_user: User = Depends(get_current_active_user)) -> User:
+    """Dependency: only administrators may read/write config or restart."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
 
 
 class ConfigContent(BaseModel):
@@ -22,7 +29,7 @@ class ConfigContent(BaseModel):
 
 @router.get("/config")
 async def get_config_file(
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(require_admin)
 ):
     """Get raw config.yml content."""
     settings = get_settings()
@@ -40,20 +47,30 @@ async def get_config_file(
 @router.post("/config")
 async def save_config_file(
     config: ConfigContent,
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(require_admin)
 ):
     """Save raw config.yml content."""
     settings = get_settings()
-    
+
     # Validate YAML syntax
     try:
-        yaml.safe_load(config.content)
+        parsed = yaml.safe_load(config.content) or {}
     except yaml.YAMLError as e:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Invalid YAML syntax: {str(e)}"
         )
-    
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="Config must be a YAML mapping")
+
+    # Validate against the application schema so a syntactically-valid but
+    # semantically-broken config can't be persisted and left to crash startup.
+    try:
+        Config(**parsed)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid configuration: {str(e)}")
+
     # Save to file
     try:
         # Direct write (atomic rename doesn't work well with Docker bind mounts)
@@ -71,7 +88,7 @@ async def save_config_file(
 
 @router.post("/restart")
 async def restart_application(
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(require_admin)
 ):
     """Restart the application to apply config changes."""
     try:

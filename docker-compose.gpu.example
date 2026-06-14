@@ -30,7 +30,7 @@ services:
     environment:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - TZ=${TZ:-America/Chicago}
-      - SECRET_KEY=${SECRET_KEY:-changeme-generate-secret-key}
+      - SECRET_KEY=${SECRET_KEY:?Set a strong SECRET_KEY in .env (e.g. openssl rand -hex 32)}
       - ACCESS_TOKEN_EXPIRE_MINUTES=1440
       - INGEST_DIR=/app/ingest
       - OUTPUT_DIR=/app/audio_storage

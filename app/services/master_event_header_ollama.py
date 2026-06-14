@@ -12,7 +12,7 @@ from ..config import get_settings, incidents_ollama_master_model
 from ..database import EventsSessionLocal, LogsSessionLocal
 from ..models.event import Event, EventTranscriptLink
 from ..models.log_entry import LogEntry
-from .events_common import merge_entities_from_link_json_strings
+from .events_common import event_work_lock, merge_entities_from_link_json_strings
 from .events_debug import append_ner as debug_append_ner
 from .ollama_event_routing import (
     _message_text_for_decision,
@@ -253,14 +253,18 @@ def _run_master_header_normalize(event_db_id: int, cfg: Any, pipe: Any) -> None:
                     loc[:40] if loc else "",
                 )
 
-        ev2 = events_db.query(Event).filter(Event.id == event_db_id).first()
-        if not ev2:
-            return
-        ev2.event_type = et or None
-        ev2.location = loc or None
-        ev2.units = units or None
-        ev2.status_detail = sd or None
-        events_db.commit()
+        # Take the per-event work lock only around the read-modify-write so a
+        # concurrent foreground attach/close can't lose this header update (and
+        # vice versa). The slow LLM call above runs outside the lock.
+        with event_work_lock(event_db_id):
+            ev2 = events_db.query(Event).filter(Event.id == event_db_id).first()
+            if not ev2:
+                return
+            ev2.event_type = et or None
+            ev2.location = loc or None
+            ev2.units = units or None
+            ev2.status_detail = sd or None
+            events_db.commit()
         logger.info(
             "Master header: updated event_id=%s type=%r location=%r",
             ev2.event_id,

@@ -52,8 +52,12 @@ async def _auto_summary_loop() -> None:
 
     while True:
         try:
-            today = datetime.utcnow().date()
-            now_hour = datetime.utcnow().hour
+            # LogEntry.timestamp is stored as local wall-clock (from filenames /
+            # file mtime), so "today" and the current hour must use local time too,
+            # otherwise non-UTC hosts skip/duplicate the wrong hours.
+            now = datetime.now()
+            today = now.date()
+            now_hour = now.hour
 
             db = LogsSessionLocal()
             try:
@@ -102,18 +106,8 @@ async def _auto_summary_loop() -> None:
                         if not entries:
                             continue
 
-                        try:
-                            result = generate_hour_summary(entries, date_str=date_str, hour=hour)
-                            text = result["summary"]
-                        except Exception as e:
-                            logger.warning(
-                                "Auto summary generation failed for %s hour=%s: %s",
-                                date_str,
-                                hour,
-                                e,
-                            )
-                            continue
-
+                        # Check for an existing summary BEFORE the (slow, paid) LLM
+                        # call so we don't generate and then throw the result away.
                         existing = (
                             db.query(HourSummary)
                             .filter(
@@ -123,6 +117,22 @@ async def _auto_summary_loop() -> None:
                             .first()
                         )
                         if existing:
+                            continue
+
+                        try:
+                            # Offload the blocking Gemini HTTP call so it doesn't
+                            # stall the event loop (websockets, queue, etc.).
+                            result = await asyncio.to_thread(
+                                generate_hour_summary, entries, date_str=date_str, hour=hour
+                            )
+                            text = result["summary"]
+                        except Exception as e:
+                            logger.warning(
+                                "Auto summary generation failed for %s hour=%s: %s",
+                                date_str,
+                                hour,
+                                e,
+                            )
                             continue
 
                         created = HourSummary(

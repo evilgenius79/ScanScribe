@@ -7,6 +7,7 @@ import os
 import time
 import asyncio
 import shutil
+import threading
 from typing import Optional, Dict, Set
 from pathlib import Path
 import logging
@@ -29,7 +30,8 @@ class SimpleFileHandler(FileSystemEventHandler):
     def __init__(self, watcher_service):
         self.watcher_service = watcher_service
         self._processing: Set[str] = set()  # Prevent duplicate processing
-        
+        self._processing_lock = threading.Lock()  # watchdog dispatches on its own threads
+
     def on_created(self, event):
         if event.is_directory:
             return
@@ -44,34 +46,60 @@ class SimpleFileHandler(FileSystemEventHandler):
     def _handle_file(self, file_path: str) -> None:
         """Handle new file - immediately move to queue."""
         filename = os.path.basename(file_path)
-        
-        # Skip if already processing
-        if file_path in self._processing:
-            return
-            
+
         # Check if it's an audio file
         ext = os.path.splitext(file_path)[1].lower()
         extensions = self.watcher_service.extensions
-        
+
         if ext not in extensions:
             logger.debug(f"Ignoring {filename} - not a monitored extension")
             return
-        
+
         # Skip if file doesn't exist (race condition)
         if not os.path.exists(file_path):
             return
-            
-        self._processing.add(file_path)
-        
+
+        # Atomically claim the file so a create+move pair for the same path can't
+        # both pass the duplicate guard from different watchdog threads.
+        with self._processing_lock:
+            if file_path in self._processing:
+                return
+            self._processing.add(file_path)
+
         try:
-            # Small delay to ensure file is fully written (client already validated)
-            time.sleep(0.2)
-            
+            # Wait until the file size is stable before moving it. A file written
+            # directly into the ingest dir (not via the trusted client) could
+            # otherwise be transcribed mid-write, producing a truncated result.
+            if not self._wait_for_stable_file(file_path):
+                logger.warning(f"File never stabilized, skipping: {filename}")
+                return
+
             # Move to queue
             self.watcher_service._queue_file(file_path)
-            
+
         finally:
-            self._processing.discard(file_path)
+            with self._processing_lock:
+                self._processing.discard(file_path)
+
+    @staticmethod
+    def _wait_for_stable_file(file_path: str, checks: int = 5, interval: float = 0.2) -> bool:
+        """Return True once the file size stops changing across consecutive checks."""
+        last_size = -1
+        stable = 0
+        for _ in range(checks * 3):  # cap total attempts so a vanishing file doesn't hang
+            try:
+                size = os.path.getsize(file_path)
+            except OSError:
+                return False
+            if size == last_size and size > 0:
+                stable += 1
+                if stable >= 2:
+                    return True
+            else:
+                stable = 0
+            last_size = size
+            time.sleep(interval)
+        return last_size > 0
 
 
 class WatcherService:

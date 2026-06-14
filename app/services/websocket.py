@@ -37,11 +37,13 @@ class WebSocketManager:
         
     async def broadcast(self, message: Dict):
         """Broadcast message to all connected clients."""
-        # Add to buffer
-        self._log_buffer.append(message)
-        if len(self._log_buffer) > self._max_buffer:
-            self._log_buffer.pop(0)
-            
+        # Only buffer log lines for replay. Replaying stale transcription/status
+        # messages to a freshly-connected client would render them as if live.
+        if message.get("type") == "log":
+            self._log_buffer.append(message)
+            if len(self._log_buffer) > self._max_buffer:
+                self._log_buffer.pop(0)
+
         # Send to all connections
         dead_connections = set()
         for connection in self.active_connections:

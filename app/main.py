@@ -1,6 +1,7 @@
 """Main FastAPI application."""
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -41,6 +42,21 @@ async def lifespan(app: FastAPI):
     from .logging_config import WebSocketHandler
 
     try:
+        # Fail fast on an insecure JWT signing key. Anyone who knows the public
+        # default key can forge admin tokens, so refuse to boot unless overridden.
+        if settings.secret_key_is_insecure:
+            if os.getenv("ALLOW_INSECURE_SECRET_KEY") == "1":
+                logger.warning(
+                    "⚠️ SECRET_KEY is missing or insecure and ALLOW_INSECURE_SECRET_KEY=1 is set. "
+                    "Do NOT use this in production — JWTs can be forged."
+                )
+            else:
+                raise RuntimeError(
+                    "SECRET_KEY is missing or insecure. Set a strong SECRET_KEY "
+                    "(>=16 chars, e.g. `openssl rand -hex 32`) in your environment/.env. "
+                    "Set ALLOW_INSECURE_SECRET_KEY=1 to override for local development only."
+                )
+
         loop = asyncio.get_running_loop()
         WebSocketHandler.set_main_loop(loop)
 
@@ -90,10 +106,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware — no credentials needed (Bearer token auth, not cookies)
+# CORS middleware — no credentials needed (Bearer token auth, not cookies).
+# Restrict origins by setting CORS_ALLOW_ORIGINS (comma-separated); defaults to
+# "*" for backwards compatibility on self-hosted LAN deployments.
+_cors_origins = [
+    o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()
+] or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
