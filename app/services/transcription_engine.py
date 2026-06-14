@@ -216,19 +216,11 @@ class TranscriptionEngine:
             stride_length_samples = STRIDE_LENGTH_S * sr
             audio_len = len(audio)
             
-            # English-only transcription
-            forced_decoder_ids = self.processor.get_decoder_prompt_ids(
-                language="en",
-                task="transcribe"
-            )
-            
             logger.info("🔄 Transcribing (en)...")
-            
+
             with torch.inference_mode():
                 if audio_len <= chunk_length_samples:
-                    transcript, confidence = self._transcribe_chunk(
-                        audio, forced_decoder_ids
-                    )
+                    transcript, confidence = self._transcribe_chunk(audio)
                 else:
                     num_chunks = int(np.ceil((audio_len - chunk_length_samples) / 
                                             (chunk_length_samples - stride_length_samples))) + 1
@@ -245,9 +237,7 @@ class TranscriptionEngine:
                         if len(chunk) < sr:
                             continue
                         
-                        chunk_text, chunk_conf = self._transcribe_chunk(
-                            chunk, forced_decoder_ids
-                        )
+                        chunk_text, chunk_conf = self._transcribe_chunk(chunk)
                         
                         if chunk_text:
                             transcripts.append(chunk_text)
@@ -282,18 +272,21 @@ class TranscriptionEngine:
             logger.error(f"❌ Transcription failed: {e}")
             return None
 
-    def _transcribe_chunk(self, audio_chunk: np.ndarray, forced_decoder_ids=None) -> tuple:
+    def _transcribe_chunk(self, audio_chunk: np.ndarray) -> tuple:
         """Transcribe a single audio chunk."""
         # Prepare inputs
         input_features = self.processor(
             audio_chunk,
             sampling_rate=16000,
             return_tensors="pt"
-        ).input_features.to(device=self.device, dtype=self.model.dtype)        
-        # Generate transcription
+        ).input_features.to(device=self.device, dtype=self.model.dtype)
+        # Generate transcription. Force English transcription via the supported
+        # language/task kwargs rather than the deprecated forced_decoder_ids,
+        # which is ignored/overridden by Whisper's generation config.
         generated_ids = self.model.generate(
             input_features,
-            forced_decoder_ids=forced_decoder_ids,
+            language="en",
+            task="transcribe",
             num_beams=self.config.transcription.beam_size,
             max_length=448,
             return_dict_in_generate=True,

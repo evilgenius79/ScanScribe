@@ -1,4 +1,17 @@
-"""Insights API routes."""
+"""Insights API routes.
+
+Time basis (intentional):
+- Calendar views (hourly/daily/weekly/monthly activity, day summaries, search,
+  talkgroup breakdowns) filter on ``LogEntry.timestamp``, which is stored as
+  local wall-clock (derived from the recording filename / file mtime). This is
+  what users expect a "calendar day" to mean for their scanner.
+- Real-time cards (live calls-per-minute, short trend windows) filter on
+  ``LogEntry.created_at`` (UTC, when the row was inserted) so the metric reflects
+  ingest time regardless of the recording's wall-clock timestamp.
+These two bases serve different questions and are deliberately not unified.
+Day windows use an inclusive end-of-day bound; with second-precision timestamps
+no row falls in the sub-second gap to the next midnight.
+"""
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session

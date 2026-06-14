@@ -1,4 +1,5 @@
 """Database configuration and session management."""
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
@@ -8,6 +9,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -119,37 +122,40 @@ def init_db():
     from .models import event  # noqa: F401
     EventsBase.metadata.create_all(bind=events_engine)
 
-    # Migrations
-    with events_engine.connect() as conn:
-        r = conn.execute(text("PRAGMA table_info(events)"))
-        cols = [row[1] for row in r.fetchall()]
-        if "close_recommendation" not in cols:
-            conn.execute(text("ALTER TABLE events ADD COLUMN close_recommendation BOOLEAN"))
+    # Lightweight, idempotent schema migrations for the events DB. Each is guarded
+    # by a column-existence check so re-running on every boot is a no-op. Wrapped in
+    # try/except so a migration failure surfaces a clear log line instead of an
+    # opaque traceback that aborts startup.
+    def _ensure_column(conn, table: str, column: str, ddl_type: str) -> None:
+        existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})")).fetchall()}
+        if column not in existing:
+            logger.info("Migrating events DB: adding %s.%s", table, column)
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
             conn.commit()
-        r = conn.execute(text("PRAGMA table_info(events)"))
-        cols = [row[1] for row in r.fetchall()]
-        if "broadcast_type" not in cols:
-            conn.execute(text("ALTER TABLE events ADD COLUMN broadcast_type VARCHAR(64)"))
-            conn.commit()
-        r = conn.execute(text("PRAGMA table_info(event_transcript_links)"))
-        link_cols = [row[1] for row in r.fetchall()]
-        if "entities_json" not in link_cols:
-            conn.execute(text("ALTER TABLE event_transcript_links ADD COLUMN entities_json TEXT"))
-            conn.commit()
-        r = conn.execute(text("PRAGMA table_info(event_transcript_links)"))
-        link_cols2 = [row[1] for row in r.fetchall()]
-        if "llm_reason" not in link_cols2:
-            conn.execute(text("ALTER TABLE event_transcript_links ADD COLUMN llm_reason TEXT"))
-            conn.commit()
-        # span_store schema changed (dropped legacy label columns, added 'status').
-        # Wipe + recreate when the legacy columns are present — user opted-in to a clean slate
-        # for entity observations (no backfill). Safe: SpanStore is regenerated from new ingest.
-        r = conn.execute(text("PRAGMA table_info(span_store)"))
-        span_cols = {row[1] for row in r.fetchall()}
-        _LEGACY_SPAN_COLS = {"cross_streets", "persons", "vehicles", "plates"}
-        if span_cols & _LEGACY_SPAN_COLS:
-            conn.execute(text("DROP TABLE IF EXISTS span_store"))
-            conn.commit()
-            # Recreate via SQLAlchemy metadata so new schema is applied.
-            from .models.event import SpanStore as _SpanStore
-            _SpanStore.__table__.create(bind=events_engine, checkfirst=True)
+
+    try:
+        with events_engine.connect() as conn:
+            _ensure_column(conn, "events", "close_recommendation", "BOOLEAN")
+            _ensure_column(conn, "events", "broadcast_type", "VARCHAR(64)")
+            _ensure_column(conn, "event_transcript_links", "entities_json", "TEXT")
+            _ensure_column(conn, "event_transcript_links", "llm_reason", "TEXT")
+
+            # span_store schema changed (dropped legacy label columns, added 'status').
+            # Wipe + recreate when the legacy columns are present — user opted-in to a clean slate
+            # for entity observations (no backfill). Safe: SpanStore is regenerated from new ingest.
+            span_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(span_store)")).fetchall()}
+            _LEGACY_SPAN_COLS = {"cross_streets", "persons", "vehicles", "plates"}
+            if span_cols & _LEGACY_SPAN_COLS:
+                logger.warning(
+                    "Migrating events DB: span_store has legacy columns %s — dropping and "
+                    "recreating (entity observations are not backfilled).",
+                    sorted(span_cols & _LEGACY_SPAN_COLS),
+                )
+                conn.execute(text("DROP TABLE IF EXISTS span_store"))
+                conn.commit()
+                # Recreate via SQLAlchemy metadata so new schema is applied.
+                from .models.event import SpanStore as _SpanStore
+                _SpanStore.__table__.create(bind=events_engine, checkfirst=True)
+    except Exception:
+        logger.exception("Events DB migration failed")
+        raise
