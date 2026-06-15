@@ -22,6 +22,51 @@ An open source AI powered transcription system designed for public safety radio 
 - **Events pipeline** — NER → Worker LLM (opens incidents) → Master LLM (attach/skip/close) → header normalizer → summary
 - **Incident management** — open/close/reopen events, paginated archive, pipeline activity log, auto-close stale events by incident time
 
+## Changes in This Fork
+
+This fork hardens the upstream project with a pass of security, reliability, and
+correctness fixes. Highlights versus the original:
+
+### Security
+- **SECRET_KEY is now enforced** — the app refuses to start with a missing,
+  known-default, or too-short signing key (override for local dev with
+  `ALLOW_INSECURE_SECRET_KEY=1`). `docker-compose` no longer ships an insecure default.
+- **Upload path-traversal fixed** — client filenames are sanitized to a basename,
+  so an upload can no longer escape the queue directory.
+- **Uploads are streamed to disk** in chunks with a size cap (`MAX_UPLOAD_MB`,
+  default 500) instead of being buffered whole in memory (DoS hardening).
+- **Stored XSS fixed** in the Insights and Logs UIs — transcripts, talkgroups,
+  filenames and paths are HTML-escaped, and LLM-generated summaries are sanitized
+  with DOMPurify before rendering.
+- **Config endpoints are admin-only** — reading/writing `config.yml` and
+  restarting now require an admin, and saved configs are validated against the
+  schema before they're persisted.
+- **Registration hardened** — atomic first-admin creation, optional lockdown of
+  public sign-up (`DISABLE_OPEN_REGISTRATION`), and a bcrypt 72-byte password guard.
+- **Configurable CORS** via `CORS_ALLOW_ORIGINS` (was hard-coded `*`).
+
+### Reliability & concurrency
+- **SQLite WAL + busy timeout** on all three databases — eliminates most
+  "database is locked" errors under concurrent workers.
+- **Event pipeline locking** — background header/summary writes now take the
+  per-event work lock, so they can't clobber foreground attach/close updates.
+- **File watcher** now guards its in-flight set with a lock and waits for file
+  size to stabilize before queuing — no more duplicate or truncated transcriptions.
+- **NER inference is serialized** (HuggingFace pipelines aren't thread-safe).
+- **WebSocket** only replays log messages to new clients (not stale
+  transcriptions/stats) and deregisters sockets on any error.
+- **Auto-summaries** use a consistent local-time basis, skip the LLM call when a
+  summary already exists, and no longer block the event loop (`asyncio.to_thread`).
+- **Startup DB migrations** are logged and error-handled, and warn before the
+  destructive `span_store` rebuild instead of doing it silently.
+
+### Correctness
+- **Whisper** uses the supported `language`/`task` generate arguments instead of
+  the deprecated `forced_decoder_ids`.
+- **Transcription confidence** is computed from real token probabilities instead
+  of a fabricated constant.
+- Event models are registered in `models/__init__` so table metadata is complete.
+
 ## Prerequisites
 
 - Docker & Docker Compose
