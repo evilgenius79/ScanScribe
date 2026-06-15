@@ -1,27 +1,6 @@
 # ScanScribe
 An open source AI powered transcription system designed for public safety radio scanning. Uses whisper AI to transcribe raw radio recordings then stores and catagorizes them in an advanced searchable database. Easy to use web UI. Has the ability to create detailed incident threads with local ollama hosted LLM's. Docker ready deployment for easy setup.
 
-## Screenshots
-### ScanScribe Dashboard
-<img src="screenshots/Screenshot_1.png" alt="ScanScribe Dashboard">
-
-### Search and advanced filtering
-<img src="screenshots/Screenshot_2.png" alt="Search Engine for Transcriptions">
-
-### Insights Dashboard
-<img src="screenshots/Screenshot_3.png" alt="Advanced Insights">
-
-## Features
-
-- **Whisper transcription** — multi-worker, VAD-filtered, CPU or GPU
-- **Real-time Web UI** — WebSocket live updates, modern dark web interface
-- **Search and Playback** - Search for specific words in the database. Playback any transcriptions.
-- **Insights** — Daily activity statistics with interactable graph. Counts how many transcriptions per hour and logs talkgroups.
-- **Multi-user auth** — JWT-based login, user management
-- **Ollama LLM integration** — local model routing, header normalization, and event summaries (no cloud required)
-- **Events pipeline** — NER → Worker LLM (opens incidents) → Master LLM (attach/skip/close) → header normalizer → summary
-- **Incident management** — open/close/reopen events, paginated archive, pipeline activity log, auto-close stale events by incident time
-
 ## Changes in This Fork
 
 This fork hardens the upstream project with a pass of security, reliability, and
@@ -66,6 +45,27 @@ correctness fixes. Highlights versus the original:
 - **Transcription confidence** is computed from real token probabilities instead
   of a fabricated constant.
 - Event models are registered in `models/__init__` so table metadata is complete.
+
+## Screenshots
+### ScanScribe Dashboard
+<img src="screenshots/Screenshot_1.png" alt="ScanScribe Dashboard">
+
+### Search and advanced filtering
+<img src="screenshots/Screenshot_2.png" alt="Search Engine for Transcriptions">
+
+### Insights Dashboard
+<img src="screenshots/Screenshot_3.png" alt="Advanced Insights">
+
+## Features
+
+- **Whisper transcription** — multi-worker, VAD-filtered, CPU or GPU
+- **Real-time Web UI** — WebSocket live updates, modern dark web interface
+- **Search and Playback** - Search for specific words in the database. Playback any transcriptions.
+- **Insights** — Daily activity statistics with interactable graph. Counts how many transcriptions per hour and logs talkgroups.
+- **Multi-user auth** — JWT-based login, user management
+- **Ollama LLM integration** — local model routing, header normalization, and event summaries (no cloud required)
+- **Events pipeline** — NER → Worker LLM (opens incidents) → Master LLM (attach/skip/close) → header normalizer → summary
+- **Incident management** — open/close/reopen events, paginated archive, pipeline activity log, auto-close stale events by incident time
 
 ## Prerequisites
 
