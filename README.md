@@ -294,6 +294,24 @@ sudo dphys-swapfile setup && sudo dphys-swapfile swapon
 ```
 Open `http://<pi-ip>:8000` and register your first account.
 
+### Faster builds
+The first build is dominated by downloading the PyTorch wheel (~200 MB+) — there's
+no way around that on a cold build. But you can make everything *after* it fast:
+
+- **Re-builds are cached.** The CPU `Dockerfile` uses a BuildKit pip cache mount,
+  so once the wheels are downloaded, later `--build` runs reuse them and finish in
+  seconds. BuildKit is on by default in modern Docker; if yours is older, prefix
+  with `DOCKER_BUILDKIT=1`:
+  ```bash
+  DOCKER_BUILDKIT=1 docker compose up -d --build
+  ```
+- **Skip the Pi's CPU entirely** by cross-building the image on a faster x86
+  machine and shipping it over:
+  ```bash
+  docker buildx build --platform linux/arm64 -f Dockerfile.cpu -t scanscribe:cpu --load . \
+    && docker save scanscribe:cpu | ssh pi@<pi-ip> 'docker load'
+  ```
+
 ### Tips
 - Run the Whisper model from a USB SSD rather than the SD card for better I/O.
 - Keep audio clips short; long recordings take noticeably longer on CPU.

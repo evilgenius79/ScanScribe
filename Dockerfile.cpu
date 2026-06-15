@@ -1,8 +1,11 @@
+# syntax=docker/dockerfile:1
 # CPU image (PyTorch + TorchAudio, official CPU wheel index).
 # Build: docker build -f Dockerfile.cpu -t scanscribe:cpu .
 #
 # Build context must include `requirements.txt` (copy from requirements.cpu.example).
 # Keep `TORCH_VERSION` in sync with that file (or compose build args).
+# Uses a BuildKit pip cache mount so re-builds reuse downloaded wheels (esp. the
+# large torch wheel). Requires BuildKit, which is the default in modern Docker.
 ARG PYTHON_VERSION=3.11
 
 FROM python:${PYTHON_VERSION}-slim AS builder
@@ -22,11 +25,12 @@ COPY requirements.txt .
 # ARM64 (e.g. Raspberry Pi 5) those wheels live on PyPI and are already CPU-only,
 # so we keep what requirements.txt installed instead of hitting an index that has
 # no aarch64 build.
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
+    && pip install -r requirements.txt \
     && ARCH="$(uname -m)" \
     && if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then \
-         pip install --no-cache-dir --force-reinstall --index-url https://download.pytorch.org/whl/cpu \
+         pip install --force-reinstall --index-url https://download.pytorch.org/whl/cpu \
            "torch==${TORCH_VERSION}" "torchaudio==${TORCH_VERSION}"; \
        else \
          echo "Architecture $ARCH: keeping PyPI CPU wheels for torch/torchaudio"; \
