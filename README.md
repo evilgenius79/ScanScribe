@@ -239,8 +239,12 @@ All runtime settings live in **`config.yml`**. Environment variables in **`.env`
 
 | Variable | Description |
 |---|---|
-| `SECRET_KEY` | **Required.** JWT signing key |
+| `SECRET_KEY` | **Required.** JWT signing key. Startup **fails** if missing, a known default, or shorter than 16 chars. Generate with `openssl rand -hex 32`. |
+| `ALLOW_INSECURE_SECRET_KEY` | Set to `1` to boot anyway with a weak/empty `SECRET_KEY` (**local dev only**). |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Token lifetime (default 60) |
+| `DISABLE_OPEN_REGISTRATION` | Set to `1`/`true` to block public self-registration after the first admin account exists. |
+| `MAX_UPLOAD_MB` | Max client upload size in MB (default 500; `0` disables the limit). |
+| `CORS_ALLOW_ORIGINS` | Comma-separated allowed CORS origins (default `*`). |
 | `INGEST_DIR` | Audio drop directory |
 | `OUTPUT_DIR` | Processed audio storage |
 | `LOG_DIR` | App logs |
