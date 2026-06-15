@@ -18,10 +18,19 @@ RUN python -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 
 COPY requirements.txt .
+# On x86_64 we force the slim CPU-only wheels from the PyTorch CPU index. On
+# ARM64 (e.g. Raspberry Pi 5) those wheels live on PyPI and are already CPU-only,
+# so we keep what requirements.txt installed instead of hitting an index that has
+# no aarch64 build.
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir --force-reinstall --index-url https://download.pytorch.org/whl/cpu \
-        "torch==${TORCH_VERSION}" "torchaudio==${TORCH_VERSION}"
+    && ARCH="$(uname -m)" \
+    && if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then \
+         pip install --no-cache-dir --force-reinstall --index-url https://download.pytorch.org/whl/cpu \
+           "torch==${TORCH_VERSION}" "torchaudio==${TORCH_VERSION}"; \
+       else \
+         echo "Architecture $ARCH: keeping PyPI CPU wheels for torch/torchaudio"; \
+       fi
 
 # --- runtime ---
 ARG PYTHON_VERSION=3.11

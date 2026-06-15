@@ -233,6 +233,72 @@ docker-compose up -d
 
 Open `http://<host>:8000` — register your first account.
 
+## Raspberry Pi 5 Setup
+
+ScanScribe runs on a Raspberry Pi 5 (ARM64, CPU-only). There is no NVIDIA GPU, so
+always use the **CPU** path. Transcription is slower than on a desktop but works
+well for short scanner clips. An **8 GB or 16 GB** Pi 5 is strongly recommended.
+
+### 1. OS and Docker
+1. Flash **64-bit Raspberry Pi OS (Bookworm)** or **Ubuntu Server 24.04 (arm64)** —
+   a 64-bit OS is required (the 32-bit OS cannot run the PyTorch wheels).
+2. Install Docker + Compose:
+   ```bash
+   curl -fsSL https://get.docker.com | sh
+   sudo usermod -aG docker $USER   # log out/in afterwards
+   sudo apt-get install -y docker-compose-plugin
+   ```
+
+### 2. Get ScanScribe and pick the CPU files
+```bash
+git clone https://github.com/evilgenius79/scanscribe.git
+cd scanscribe
+cp .env.example .env
+cp docker-compose.cpu.example docker-compose.yml
+cp requirements.cpu.example requirements.txt
+```
+- Edit `.env` and set a strong `SECRET_KEY` (`openssl rand -hex 32`) — the app
+  will refuse to start without one.
+- The CPU `Dockerfile` is ARM64-aware: on the Pi it keeps the PyPI CPU wheels for
+  `torch`/`torchaudio` (the x86 PyTorch CPU index has no aarch64 build), so no
+  manual changes are needed.
+
+### 3. Tune `config.yml` for the Pi
+```yaml
+model:
+  name: whisper-small        # or whisper-base for more speed on the Pi
+  device: cpu                # REQUIRED — the Pi has no CUDA GPU
+  workers: 2                 # Pi 5 has 4 cores; 2 leaves headroom
+```
+Then in `.env`, match the PyTorch thread limits to the core count:
+```
+OMP_NUM_THREADS=4
+MKL_NUM_THREADS=4
+TORCH_NUM_THREADS=4
+```
+
+> **Ollama events pipeline:** running Ollama *on the Pi itself* is heavy and slow.
+> Either leave `events_pipeline.enabled: false` / `incidents_ollama.enabled: false`,
+> or point `incidents_ollama.base_url` at Ollama running on another machine on your LAN.
+
+### 4. Build and run
+```bash
+docker compose up -d --build
+```
+The first build downloads PyTorch and compiles a few wheels — on a Pi 5 this can
+take **15–40 minutes** and needs swap. If the build is killed for memory, raise swap:
+```bash
+sudo dphys-swapfile swapoff
+sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
+sudo dphys-swapfile setup && sudo dphys-swapfile swapon
+```
+Open `http://<pi-ip>:8000` and register your first account.
+
+### Tips
+- Run the Whisper model from a USB SSD rather than the SD card for better I/O.
+- Keep audio clips short; long recordings take noticeably longer on CPU.
+- Check progress with `docker compose logs -f`.
+
 ## Architecture
 
 ```
